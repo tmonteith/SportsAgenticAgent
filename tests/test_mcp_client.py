@@ -6,7 +6,25 @@ import json
 import httpx
 import pytest
 
-from app.mcp.client import DEFAULT_CFB_TOOLS, MCPClientError, SportsAgenticMCPClient
+from app.mcp.client import DEFAULT_CFB_TOOLS, MCPClientError, SportsAgenticMCPClient, _resolve_session_endpoint
+
+
+def test_resolve_session_endpoint_cross_host_override() -> None:
+    """Verify session endpoint overrides localhost in SSE data payload with the target host."""
+    # Go server returning localhost:8080 when agent connects via host.docker.internal
+    resolved = _resolve_session_endpoint(
+        "http://host.docker.internal:8080/sse",
+        "http://localhost:8080/message?sessionId=abc-123",
+    )
+    assert resolved == "http://host.docker.internal:8080/message?sessionId=abc-123"
+
+    # Go server returning localhost:8080 when agent connects via Docker network alias
+    resolved_docker = _resolve_session_endpoint(
+        "http://sportsagentic:8080/sse",
+        "http://localhost:8080/message?sessionId=xyz-789",
+    )
+    assert resolved_docker == "http://sportsagentic:8080/message?sessionId=xyz-789"
+
 
 
 @pytest.mark.asyncio

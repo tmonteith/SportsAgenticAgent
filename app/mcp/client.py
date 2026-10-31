@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -97,6 +97,24 @@ DEFAULT_CFB_TOOLS: List[Dict[str, Any]] = [
 ]
 
 
+def _resolve_session_endpoint(sse_url: str, endpoint_url: str) -> str:
+    """Resolve session endpoint URL while preserving the scheme, host, and port of sse_url."""
+    parsed_sse = urlparse(sse_url)
+    joined = urljoin(sse_url, endpoint_url)
+    parsed_joined = urlparse(joined)
+
+    return urlunparse(
+        (
+            parsed_sse.scheme,
+            parsed_sse.netloc,
+            parsed_joined.path,
+            parsed_joined.params,
+            parsed_joined.query,
+            parsed_joined.fragment,
+        )
+    )
+
+
 class SportsAgenticMCPClient:
     """Client for interacting with the SportsAgentic Go MCP server over SSE."""
 
@@ -160,7 +178,7 @@ class SportsAgenticMCPClient:
                         f"Did not receive a session message endpoint from MCP SSE stream at {self.sse_url}"
                     )
 
-                resolved_endpoint = urljoin(self.sse_url, endpoint_url)
+                resolved_endpoint = _resolve_session_endpoint(self.sse_url, endpoint_url)
                 logger.debug("MCP session endpoint resolved to %s", resolved_endpoint)
 
                 post_resp = await client.post(
