@@ -23,8 +23,9 @@ DEFAULT_CFB_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_cfb_scores",
         "description": (
-            "Fetch College Football scores, game schedules, and match results "
-            "for a given year, week, date (YYYY-MM-DD), or team."
+            "Fetch College Football scores, game schedules, and match results. "
+            "IMPORTANT: Always supply the 'team' argument when a specific team or game is requested "
+            "to avoid retrieving hundreds of nationwide games."
         ),
         "inputSchema": {
             "type": "object",
@@ -44,8 +45,8 @@ DEFAULT_CFB_TOOLS: List[Dict[str, Any]] = [
                 "team": {
                     "type": "string",
                     "description": (
-                        "Team name or common abbreviation "
-                        "(e.g., 'Ole Miss', 'Bama', 'Ohio State', 'CSU')"
+                        "Team name or abbreviation (e.g., 'CSU', 'Ole Miss', 'Bama', 'Ohio State'). "
+                        "ALWAYS provide this if the question is about a specific team."
                     ),
                 },
             },
