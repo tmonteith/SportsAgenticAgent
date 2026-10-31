@@ -20,5 +20,6 @@ Use the `SportsAgentic` MCP tools whenever a user asks about college football ga
    - Use when asked for AP Top 25, Coaches Poll, or College Football Playoff (CFP) rankings.
 
 ## Guidelines
+- Always execute function tools (`get_cfb_scores`, `get_team_schedule`, `get_cfb_rankings`) immediately when answering user queries.
 - Common team nicknames and abbreviations (e.g., `"Bama"`, `"Ole Miss"`, `"OSU"`, `"UGA"`, `"CSU"`, `"Longhorns"`) are supported directly by the `team` parameter.
 - Format final responses clearly with team names, scores, conference context, and venue/date information when available.
