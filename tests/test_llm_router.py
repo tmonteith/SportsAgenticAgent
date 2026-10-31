@@ -196,3 +196,93 @@ async def test_inline_json_tool_call_fallback_parsing() -> None:
         assert resp.tool_calls[0].name == "get_team_schedule"
         assert resp.tool_calls[0].arguments == {"team": "CSU"}
         assert resp.content == ""
+
+
+@pytest.mark.asyncio
+async def test_gemini_preserves_thought_signature_and_backfills_when_missing() -> None:
+    """Verify GeminiClient parses thought_signature, preserves it, and backfills bypass sentinel if missing."""
+    import json
+
+    captured_requests = []
+
+    def gemini_handler(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content.decode("utf-8"))
+        captured_requests.append(data)
+        return httpx.Response(
+            200,
+            json=_openai_completion_payload(
+                tool_calls=[
+                    {
+                        "id": "call_gemini_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_cfb_scores",
+                            "arguments": '{"team": "Ole Miss"}',
+                        },
+                        "extra_content": {
+                            "google": {
+                                "thought_signature": "cryptographic_signature_abc_123"
+                            }
+                        },
+                    }
+                ]
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(gemini_handler)) as gemini_http:
+        gemini = GeminiClient(api_key="test-key", http_client=gemini_http)
+
+        # 1. Turn 1: initial user query
+        resp1 = await gemini.chat([{"role": "user", "content": "Ole Miss score"}])
+        assert len(resp1.tool_calls) == 1
+        assert resp1.tool_calls[0].extra_content == {
+            "google": {"thought_signature": "cryptographic_signature_abc_123"}
+        }
+
+        # 2. Turn 2: replay with preserved thought signature
+        messages_with_signature = [
+            {"role": "user", "content": "Ole Miss score"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": resp1.tool_calls[0].id,
+                        "type": "function",
+                        "function": {
+                            "name": resp1.tool_calls[0].name,
+                            "arguments": '{"team": "Ole Miss"}',
+                        },
+                        "extra_content": resp1.tool_calls[0].extra_content,
+                    }
+                ],
+            },
+            {"role": "tool", "name": "get_cfb_scores", "content": "[]"},
+        ]
+        await gemini.chat(messages_with_signature)
+        sent_tool_call_1 = captured_requests[1]["messages"][1]["tool_calls"][0]
+        assert sent_tool_call_1["extra_content"]["google"]["thought_signature"] == "cryptographic_signature_abc_123"
+
+        # 3. Turn 3: replay without thought signature (e.g. cross-model from llama-server)
+        messages_without_signature = [
+            {"role": "user", "content": "Ole Miss score"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_llama_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_cfb_scores",
+                            "arguments": '{"team": "Ole Miss"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "name": "get_cfb_scores", "content": "[]"},
+        ]
+        await gemini.chat(messages_without_signature)
+        sent_tool_call_2 = captured_requests[2]["messages"][1]["tool_calls"][0]
+        assert sent_tool_call_2["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+

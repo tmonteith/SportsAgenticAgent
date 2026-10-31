@@ -212,3 +212,124 @@ async def test_orchestrator_mid_turn_failover_and_max_iterations(
         assert result.provider_used == "gemini"
         assert result.fallback_triggered is True
         assert len(result.tool_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_gemini_thought_signature_roundtrip_on_failover(
+    sample_skills_dir: Path,
+) -> None:
+    """Verify Gemini thought_signature is captured, preserved, and sent back on step 2 when llama is down."""
+    gemini_requests = []
+
+    def mcp_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sse":
+            return httpx.Response(200, content=b"data: /message?sessionId=orch-3\n\n")
+        body = json.loads(request.content.decode("utf-8"))
+        if body["method"] == "tools/list":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": DEFAULT_CFB_TOOLS}},
+            )
+        if body["method"] == "tools/call":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '[{"team": "Ole Miss", "opponent": "LSU", "points": 38, "opponent_points": 24}]',
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    def llama_down_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Could not connect to llama-server")
+
+    def gemini_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        gemini_requests.append(body)
+        if len(gemini_requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_gemini_sched_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_team_schedule",
+                                            "arguments": '{"team": "Ole Miss"}',
+                                        },
+                                        "extra_content": {
+                                            "google": {
+                                                "thought_signature": "gemini_cryptographic_token_xyz"
+                                            }
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Ole Miss defeated LSU 38-24 last week.",
+                        },
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(mcp_handler)) as mcp_http, \
+               httpx.AsyncClient(transport=httpx.MockTransport(llama_down_handler)) as llama_http, \
+               httpx.AsyncClient(transport=httpx.MockTransport(gemini_handler)) as gemini_http:
+        mcp_client = SportsAgenticMCPClient(http_client=mcp_http)
+        llama_client = LlamaServerClient(http_client=llama_http)
+        gemini_client = GeminiClient(api_key="test-key", http_client=gemini_http)
+        router = LLMRouter(llama_client=llama_client, gemini_client=gemini_client)
+        skills_loader = SkillsLoader(skills_dir=sample_skills_dir, extra_dirs=[])
+
+        orchestrator = AgentOrchestrator(
+            mcp_client=mcp_client,
+            llm_router=router,
+            skills_loader=skills_loader,
+            max_tool_iterations=3,
+        )
+
+        result = await orchestrator.run("What was the score of the Ole Miss game last week?")
+        assert result.reply == "Ole Miss defeated LSU 38-24 last week."
+        assert result.provider_used == "gemini"
+        assert result.fallback_triggered is True
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "get_team_schedule"
+
+        # Verify that in step 2, the assistant message sent to Gemini included the thought signature
+        assert len(gemini_requests) == 2
+        step2_messages = gemini_requests[1]["messages"]
+        # Assistant message with tool_calls should be before the tool result
+        assistant_msg = [m for m in step2_messages if m.get("role") == "assistant"][0]
+        replayed_call = assistant_msg["tool_calls"][0]
+        assert (
+            replayed_call["extra_content"]["google"]["thought_signature"]
+            == "gemini_cryptographic_token_xyz"
+        )
+

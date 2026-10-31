@@ -87,21 +87,25 @@ class AgentOrchestrator:
                 )
 
             # Record assistant tool_calls message in conversation history
+            assistant_tool_calls: List[Dict[str, Any]] = []
+            for tc in llm_response.tool_calls:
+                call_dict: Dict[str, Any] = {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    },
+                }
+                if tc.extra_content:
+                    call_dict["extra_content"] = tc.extra_content
+                assistant_tool_calls.append(call_dict)
+
             messages.append(
                 {
                     "role": "assistant",
                     "content": llm_response.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in llm_response.tool_calls
-                    ],
+                    "tool_calls": assistant_tool_calls,
                 }
             )
 

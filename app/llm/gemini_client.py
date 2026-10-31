@@ -19,6 +19,41 @@ from app.logging_config import get_logger
 
 logger = get_logger("llm.gemini")
 
+GEMINI_BYPASS_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
+def sanitize_messages_for_gemini(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure all assistant tool calls contain a thought_signature for Gemini 2.5/3 models."""
+    sanitized: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            msg_copy = dict(msg)
+            tool_calls_copy: List[Dict[str, Any]] = []
+            for tc in msg["tool_calls"]:
+                tc_copy = dict(tc)
+                extra = tc_copy.get("extra_content")
+                has_signature = False
+                if isinstance(extra, dict):
+                    google_meta = extra.get("google")
+                    if isinstance(google_meta, dict) and google_meta.get("thought_signature"):
+                        has_signature = True
+                    elif extra.get("thought_signature"):
+                        has_signature = True
+
+                if not has_signature:
+                    tc_copy["extra_content"] = {
+                        "google": {
+                            "thought_signature": GEMINI_BYPASS_THOUGHT_SIGNATURE,
+                        }
+                    }
+                tool_calls_copy.append(tc_copy)
+            msg_copy["tool_calls"] = tool_calls_copy
+            sanitized.append(msg_copy)
+        else:
+            sanitized.append(msg)
+    return sanitized
+
+
 
 class GeminiClient:
     """Async client for Google Gemini via its OpenAI-compatible chat completions endpoint."""
@@ -60,7 +95,7 @@ class GeminiClient:
 
         payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": sanitize_messages_for_gemini(messages),
         }
         known_tools: List[str] = []
         if mcp_tools:

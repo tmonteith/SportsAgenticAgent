@@ -27,6 +27,7 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: Dict[str, Any] = field(default_factory=dict)
+    extra_content: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -96,11 +97,14 @@ def parse_openai_chat_response(
         else:
             args_dict = {}
 
+        extra_content = tc.get("extra_content")
+
         parsed_tool_calls.append(
             ToolCallRequest(
                 id=str(tc.get("id") or f"call_{idx + 1}"),
                 name=str(func_name),
                 arguments=args_dict if isinstance(args_dict, dict) else {},
+                extra_content=extra_content if isinstance(extra_content, dict) else None,
             )
         )
 
