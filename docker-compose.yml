@@ -1,0 +1,26 @@
+services:
+  sportsagentic-agent:
+    build: .
+    image: sportsagentic-agent:latest
+    container_name: sportsagentic-agent
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:8080/sse}
+      - MCP_TIMEOUT_SECONDS=${MCP_TIMEOUT_SECONDS:-10.0}
+      - LLAMA_SERVER_URL=${LLAMA_SERVER_URL:-http://host.docker.internal:8081/v1}
+      - LLAMA_MODEL=${LLAMA_MODEL:-local-model}
+      - LLAMA_TIMEOUT_SECONDS=${LLAMA_TIMEOUT_SECONDS:-15.0}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_TIMEOUT_SECONDS=${GEMINI_TIMEOUT_SECONDS:-30.0}
+      - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-auto}
+      - MAX_TOOL_ITERATIONS=${MAX_TOOL_ITERATIONS:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PORT=8000
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -1,0 +1,106 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/tmonteith/sportsagentic-agent
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Application runtime configuration (mounted via ConfigMap)
+config:
+  mcpServerUrl: "http://sportsagentic:8080/sse"
+  mcpTimeoutSeconds: "10.0"
+  llamaServerUrl: "http://llama-server:8081/v1"
+  llamaModel: "local-model"
+  llamaTimeoutSeconds: "15.0"
+  geminiModel: "gemini-2.5-flash"
+  geminiTimeoutSeconds: "30.0"
+  geminiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
+  defaultLlmProvider: "auto"
+  maxToolIterations: "5"
+  skillsDir: "skills"
+  logLevel: "INFO"
+  port: "8000"
+
+# Secret management for Google Gemini backup/alternative inference
+secrets:
+  # Provide an existing Kubernetes Secret name in production, or set geminiApiKey below
+  existingSecret: ""
+  existingSecretKey: "GEMINI_API_KEY"
+  geminiApiKey: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: sportsagentic-agent.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

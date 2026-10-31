@@ -1,0 +1,12 @@
+SportsAgenticAgent has been deployed!
+
+1. Forward the service port locally to access the API:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sportsagentic-agent.fullname" . }} 8000:{{ .Values.service.port }}
+
+2. Check upstream health (MCP, llama-server, and Gemini):
+  curl -s http://localhost:8000/health
+
+3. Send a chat query:
+  curl -s http://localhost:8000/chat \
+    -H "Content-Type: application/json" \
+    -d '{"message": "What is the schedule for Ole Miss?", "provider": "auto"}'

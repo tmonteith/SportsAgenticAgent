@@ -16,6 +16,19 @@ This repository contains the FastAPI agent application (`app/main.py`) that brid
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### Docker / Docker Compose
+```bash
+docker compose up --build
+```
+
+### Helm (Kubernetes)
+```bash
+helm lint charts/sportsagentic-agent
+helm upgrade --install sportsagentic-agent charts/sportsagentic-agent \
+  --set config.mcpServerUrl="http://sportsagentic:8080/sse" \
+  --set config.llamaServerUrl="http://llama-server:8081/v1"
+```
+
 ## Querying the Agent API
 
 ### 1. Chat Completion (`POST /chat`)

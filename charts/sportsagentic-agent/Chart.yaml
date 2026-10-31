@@ -1,0 +1,15 @@
+apiVersion: v2
+name: sportsagentic-agent
+description: Helm chart for deploying the SportsAgenticAgent FastAPI service (MCP + llama-server + Gemini failover)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - fastapi
+  - mcp
+  - college-football
+  - llama-cpp
+  - gemini
+  - agent
+maintainers:
+  - name: tmonteith
