@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ProviderMode = Literal["auto", "llama", "gemini"]
 
@@ -49,6 +49,33 @@ class ChatResponse(BaseModel):
     provider_used: str
     fallback_triggered: bool = False
     tool_calls: List[ToolCallRecord] = Field(default_factory=list)
+
+
+class ChatStreamMessage(BaseModel):
+    """A single message sent by the browser client to POST /chat/stream."""
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatStreamRequest(BaseModel):
+    """Request payload for POST /chat/stream."""
+
+    messages: List[ChatStreamMessage] = Field(
+        ...,
+        min_length=1,
+        description="Full conversation so far, ending with the new user message",
+    )
+
+    @field_validator("messages")
+    @classmethod
+    def _last_message_is_user_query(
+        cls, messages: List[ChatStreamMessage]
+    ) -> List[ChatStreamMessage]:
+        last = messages[-1]
+        if last.role != "user" or not last.content.strip():
+            raise ValueError("the last message must be a non-empty user message")
+        return messages
 
 
 class ComponentStatus(BaseModel):

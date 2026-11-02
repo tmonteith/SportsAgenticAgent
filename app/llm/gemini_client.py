@@ -15,6 +15,7 @@ from app.llm.base import (
     mcp_tools_to_openai_tools,
     parse_openai_chat_response,
 )
+from app.llm.streaming import ChatStreamAssembler, TextDeltaCallback, read_chat_stream
 from app.logging_config import get_logger
 
 logger = get_logger("llm.gemini")
@@ -146,6 +147,92 @@ class GeminiClient:
                 provider_name="gemini",
                 known_tool_names=known_tools,
             )
+        except httpx.TimeoutException as exc:
+            logger.error("Gemini request timed out after %.1fs: %s", self.timeout_seconds, exc)
+            raise LLMTimeoutError(
+                f"Gemini request timed out after {self.timeout_seconds}s"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.error("Gemini returned HTTP %d: %s", status, exc.response.text)
+            if status >= 500:
+                raise LLMConnectionError(f"Gemini returned server error HTTP {status}") from exc
+            raise LLMClientError(f"Gemini returned HTTP {status}: {exc.response.text}") from exc
+        except httpx.HTTPError as exc:
+            logger.error("Gemini connection failed: %s", exc)
+            raise LLMConnectionError(f"Could not connect to Gemini API: {exc}") from exc
+        except ValueError as exc:
+            logger.error("Invalid JSON from Gemini: %s", exc)
+            raise LLMClientError(f"Invalid JSON from Gemini: {exc}") from exc
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        on_text_delta: TextDeltaCallback,
+        mcp_tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        """Stream a chat completion from Gemini, reporting text as it arrives."""
+        if not self.is_configured:
+            raise LLMClientError(
+                "Gemini API key is not configured. Set the GEMINI_API_KEY environment variable."
+            )
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": sanitize_messages_for_gemini(messages),
+            "stream": True,
+        }
+        known_tools: List[str] = []
+        if mcp_tools:
+            openai_tools = mcp_tools_to_openai_tools(mcp_tools)
+            if openai_tools:
+                payload["tools"] = openai_tools
+                known_tools = [
+                    t["function"]["name"]
+                    for t in openai_tools
+                    if "function" in t and "name" in t["function"]
+                ]
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        assembler = ChatStreamAssembler("gemini", on_text_delta, known_tools)
+        start = time.monotonic()
+        logger.info("Streaming inference request to Gemini (model=%s)", self.model)
+
+        if self._external_client is not None:
+            return await self._post_chat_stream(
+                self._external_client, payload, headers, assembler, start
+            )
+
+        timeout = httpx.Timeout(self.timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await self._post_chat_stream(client, payload, headers, assembler, start)
+
+    async def _post_chat_stream(
+        self,
+        client: httpx.AsyncClient,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        assembler: ChatStreamAssembler,
+        start: float,
+    ) -> LLMResponse:
+        try:
+            async with client.stream(
+                "POST",
+                self.chat_completions_url,
+                json=payload,
+                headers=headers,
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                response.raise_for_status()
+                result = await read_chat_stream(response, assembler)
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            logger.info("Gemini finished streaming in %.1fms", elapsed_ms)
+            return result
         except httpx.TimeoutException as exc:
             logger.error("Gemini request timed out after %.1fs: %s", self.timeout_seconds, exc)
             raise LLMTimeoutError(

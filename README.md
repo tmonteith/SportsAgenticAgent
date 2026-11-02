@@ -90,6 +90,15 @@ curl -s http://localhost:8000/chat \
   }'
 ```
 
+### `POST /chat/stream`
+Run an agent turn and stream progress as server-sent events. The body carries the whole conversation, ending with the new user message. Events are `tool.start`, `tool.end`, `message.delta`, `error`, and `done`, with a `: ping` comment every 15 seconds. The reply arrives as many `message.delta` events as tokens come in. Auto mode only fails over to Gemini before any text has been sent; after that, a provider failure ends the stream with `error`.
+
+```bash
+curl -N http://localhost:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Who is ranked #1?"}]}'
+```
+
 ### `GET /health`
 Check reachability and status of `SportsAgentic` MCP, `llama-server`, and Gemini configuration.
 

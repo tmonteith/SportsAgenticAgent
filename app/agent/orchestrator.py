@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from app.llm.base import LLMResponse
 from app.llm.router import LLMRouter, ProviderSelection
+from app.llm.streaming import TextDeltaCallback
 from app.logging_config import get_logger
 from app.mcp.client import MCPClientError, SportsAgenticMCPClient
 from app.schemas import ChatResponse, ConversationMessage, ToolCallRecord
 from app.skills.loader import SkillsLoader
 
 logger = get_logger("agent")
+
+# Receives ("tool.start" | "tool.end", payload) as tools run during a turn.
+ToolEventCallback = Callable[[str, Dict[str, Any]], None]
 
 
 class AgentOrchestrator:
@@ -35,8 +40,13 @@ class AgentOrchestrator:
         history: Optional[Sequence[ConversationMessage]] = None,
         provider: Optional[ProviderSelection] = None,
         skill_names: Optional[Sequence[str]] = None,
+        on_tool_event: Optional[ToolEventCallback] = None,
+        on_text_delta: Optional[TextDeltaCallback] = None,
     ) -> ChatResponse:
-        """Execute a full agent turn including any MCP tool calls."""
+        """Execute a full agent turn including any MCP tool calls.
+
+        With on_text_delta, inference is streamed and text is reported as it arrives.
+        """
         system_prompt = self.skills_loader.build_system_prompt(skill_names=skill_names)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -60,14 +70,34 @@ class AgentOrchestrator:
         executed_calls: List[ToolCallRecord] = []
         last_provider = "llama"
         fallback_triggered = False
+        text_sent = False
+        needs_break = False
+
+        def send_text(text: str) -> None:
+            nonlocal text_sent, needs_break
+            # Clients append deltas, so keep text from separate iterations apart.
+            on_text_delta(f"\n\n{text}" if needs_break else text)
+            text_sent = True
+            needs_break = False
+
+        async def infer(tools: Optional[List[Dict[str, Any]]]) -> LLMResponse:
+            if on_text_delta is None:
+                return await self.llm_router.chat(
+                    messages=messages,
+                    mcp_tools=tools,
+                    provider=provider,
+                )
+            return await self.llm_router.chat_stream(
+                messages=messages,
+                on_text_delta=send_text,
+                mcp_tools=tools,
+                provider=provider,
+                allow_fallback=not text_sent,
+            )
 
         for iteration in range(1, self.max_tool_iterations + 1):
             logger.debug("Agent iteration %d/%d", iteration, self.max_tool_iterations)
-            llm_response = await self.llm_router.chat(
-                messages=messages,
-                mcp_tools=mcp_tools,
-                provider=provider,
-            )
+            llm_response = await infer(mcp_tools)
             last_provider = llm_response.provider_used
             fallback_triggered = fallback_triggered or llm_response.fallback_triggered
 
@@ -111,11 +141,27 @@ class AgentOrchestrator:
 
             # Execute each requested MCP tool
             for tc in llm_response.tool_calls:
+                # Provider call ids repeat across iterations, so qualify them per turn.
+                event_id = f"{iteration}:{tc.id}"
+                if on_tool_event:
+                    on_tool_event(
+                        "tool.start",
+                        {"id": event_id, "name": tc.name, "args": tc.arguments},
+                    )
+
+                tool_ok = True
                 try:
                     tool_result = await self.mcp_client.call_tool(tc.name, tc.arguments)
                 except MCPClientError as exc:
                     logger.warning("MCP tool '%s' failed: %s", tc.name, exc)
                     tool_result = json.dumps({"error": str(exc)})
+                    tool_ok = False
+
+                if on_tool_event:
+                    on_tool_event(
+                        "tool.end",
+                        {"id": event_id, "name": tc.name, "ok": tool_ok},
+                    )
 
                 executed_calls.append(
                     ToolCallRecord(
@@ -133,16 +179,14 @@ class AgentOrchestrator:
                     }
                 )
 
+            needs_break = text_sent
+
         # Max tool iterations reached: request a final synthesis without tools
         logger.warning(
             "Reached max_tool_iterations (%d); requesting final synthesis without tools",
             self.max_tool_iterations,
         )
-        final_response = await self.llm_router.chat(
-            messages=messages,
-            mcp_tools=None,
-            provider=provider,
-        )
+        final_response = await infer(None)
         last_provider = final_response.provider_used
         fallback_triggered = fallback_triggered or final_response.fallback_triggered
 
