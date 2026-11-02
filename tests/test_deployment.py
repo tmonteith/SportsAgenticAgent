@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import subprocess
+import pytest
 import yaml
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -65,7 +66,7 @@ def test_helm_lint_and_template_rendering() -> None:
         return
 
     lint_proc = subprocess.run(
-        [helm_bin, "lint", str(CHART_DIR)],
+        [helm_bin, "lint", str(CHART_DIR), "--set", "secrets.geminiApiKey=test-secret-key"],
         capture_output=True,
         text=True,
         check=False,
@@ -102,3 +103,79 @@ def test_helm_lint_and_template_rendering() -> None:
         "Ingress",
         "HorizontalPodAutoscaler",
     }.issubset(kinds)
+
+
+def render_chart(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run helm template on the chart with the given extra arguments."""
+    helm_bin = shutil.which("helm")
+    assert helm_bin
+    return subprocess.run(
+        [helm_bin, "template", "test-release", str(CHART_DIR), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def deployment_container(rendered: str) -> dict:
+    """Return the agent container from rendered manifests."""
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    return deployment["spec"]["template"]["spec"]["containers"][0]
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+@pytest.mark.parametrize(
+    "args",
+    [
+        (),
+        ("--set", "secrets.geminiApiKey="),
+        ("--set", "secrets.geminiApiKey=   "),
+        ("--set", "secrets.existingSecret=,secrets.geminiApiKey="),
+    ],
+)
+def test_helm_fails_without_a_gemini_key(args: tuple[str, ...]) -> None:
+    """An empty key must stop the release instead of disabling failover silently."""
+    proc = render_chart(*args)
+    assert proc.returncode != 0
+    assert "Gemini API key is missing" in proc.stderr
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+def test_helm_existing_secret_is_required_by_the_pod() -> None:
+    """A provided key must not be optional, so a bad Secret stops the rollout."""
+    proc = render_chart("--set", "secrets.existingSecret=agent-secrets")
+    assert proc.returncode == 0, proc.stderr
+    ref = deployment_container(proc.stdout)["env"][0]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": "agent-secrets", "key": "GEMINI_API_KEY"}
+    assert "kind: Secret" not in proc.stdout
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+def test_helm_gemini_can_be_disabled_explicitly() -> None:
+    """Running without Gemini is a stated choice that leaves no key behind."""
+    proc = render_chart("--set", "secrets.geminiDisabled=true")
+    assert proc.returncode == 0, proc.stderr
+    assert "env" not in deployment_container(proc.stdout)
+    assert "kind: Secret" not in proc.stdout
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+def test_helm_numeric_image_tag_stays_a_string(tmp_path: Path) -> None:
+    """A numeric SHA must keep its digits however it reaches the chart."""
+    values = tmp_path / "values.yaml"
+    values.write_text("image:\n  tag: 8542126\n", encoding="utf-8")
+    for args in (("--set", "image.tag=8542126"), ("-f", str(values))):
+        proc = render_chart("--set", "secrets.existingSecret=agent-secrets", *args)
+        assert proc.returncode == 0, proc.stderr
+        assert deployment_container(proc.stdout)["image"].endswith(":8542126")
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+def test_helm_fails_on_a_mangled_image_tag(tmp_path: Path) -> None:
+    """A tag YAML has already rounded can't be recovered, so it must fail."""
+    values = tmp_path / "values.yaml"
+    values.write_text("image:\n  tag: 1.10\n", encoding="utf-8")
+    proc = render_chart("--set", "secrets.existingSecret=agent-secrets", "-f", str(values))
+    assert proc.returncode != 0
+    assert "image.tag" in proc.stderr

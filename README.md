@@ -55,24 +55,25 @@ A Helm chart is provided in [`charts/sportsagentic-agent`](./charts/sportsagenti
 
 ```bash
 # Lint and preview rendered manifests
-helm lint charts/sportsagentic-agent
-helm template sportsagentic-agent charts/sportsagentic-agent
+helm lint charts/sportsagentic-agent --set secrets.existingSecret=agent-secrets
+helm template sportsagentic-agent charts/sportsagentic-agent --set secrets.existingSecret=agent-secrets
+
+# Keep the API key in a Secret that Helm doesn't manage
+kubectl create namespace sportsagentic
+kubectl create secret generic agent-secrets \
+  --namespace sportsagentic \
+  --from-literal=GEMINI_API_KEY="${GEMINI_API_KEY}"
 
 # Install or upgrade the release
 helm upgrade --install sportsagentic-agent charts/sportsagentic-agent \
-  --namespace sportsagentic --create-namespace \
+  --namespace sportsagentic \
   --set config.mcpServerUrl="http://sportsagentic:8080/sse" \
   --set config.llamaServerUrl="http://llama-server:8081/v1" \
-  --set secrets.geminiApiKey="${GEMINI_API_KEY}"
+  --set secrets.existingSecret=agent-secrets \
+  --set-string image.tag=<git-sha>
 ```
 
-To use an existing Kubernetes Secret for `GEMINI_API_KEY`:
-
-```bash
-helm upgrade --install sportsagentic-agent charts/sportsagentic-agent \
-  --set secrets.existingSecret="my-gemini-secret" \
-  --set secrets.existingSecretKey="GEMINI_API_KEY"
-```
+The chart fails if neither `secrets.existingSecret` nor `secrets.geminiApiKey` is set, so an empty key can't reach the cluster. To run on `llama-server` alone, with no Gemini failover, say so explicitly with `--set secrets.geminiDisabled=true`. Use `--set-string` for the image tag, because a git SHA made only of digits is otherwise read as a number.
 
 ---
 
