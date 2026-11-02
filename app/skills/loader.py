@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from app.logging_config import get_logger
 
@@ -18,6 +18,26 @@ BASE_AGENT_PROMPT = (
     "team schedules, or national rankings. Never output manual CURL commands or claim you "
     "lack real-time access—always execute function calls to retrieve the data."
 )
+
+LAST_REGULAR_SEASON_WEEK = 15
+
+
+def current_cfb_weeks(today: date) -> Optional[Tuple[int, int]]:
+    """Return (game week, latest rankings week) for a date, or None outside the regular season.
+
+    Week 1's Saturday falls just before Labor Day, and game weeks run Tuesday to Monday.
+    Polls come out on Sunday labelled with the upcoming week, so the rankings week
+    moves two days ahead of the game week.
+    """
+    september_first = date(today.year, 9, 1)
+    labor_day = september_first + timedelta(days=(7 - september_first.weekday()) % 7)
+    week_one_start = labor_day - timedelta(days=6)
+
+    game_week = (today - week_one_start).days // 7 + 1
+    if not 1 <= game_week <= LAST_REGULAR_SEASON_WEEK:
+        return None
+    rankings_week = (today - week_one_start + timedelta(days=2)).days // 7 + 1
+    return game_week, rankings_week
 
 
 @dataclass
@@ -123,11 +143,18 @@ class SkillsLoader:
         current_date: Optional[date] = None,
     ) -> str:
         """Assemble the full system prompt including active skill instructions."""
-        today_str = (current_date or date.today()).isoformat()
+        today = current_date or date.today()
+        today_str = today.isoformat()
         sections: List[str] = [
             BASE_AGENT_PROMPT,
             f"Current date: {today_str} (Season year: {today_str[:4]}).",
         ]
+
+        weeks = current_cfb_weeks(today)
+        if weeks:
+            sections.append(
+                f"Current game week: {weeks[0]}. Latest rankings week: {weeks[1]}."
+            )
 
         selected_docs: List[SkillDocument]
         if skill_names is None:

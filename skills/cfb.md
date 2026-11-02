@@ -23,4 +23,7 @@ Use the `SportsAgentic` MCP tools whenever a user asks about college football ga
 ## Guidelines
 - Always execute function tools (`get_cfb_scores`, `get_team_schedule`, `get_cfb_rankings`) immediately when answering user queries.
 - When asked about a specific team, always pass the `team` parameter. Common team nicknames and abbreviations (e.g., `"Bama"`, `"Ole Miss"`, `"OSU"`, `"UGA"`, `"CSU"`, `"Longhorns"`) are supported directly by the `team` parameter.
+- Never guess a `week`. Use the current game week and latest rankings week from the system prompt, and if they are missing, ask the user which week they mean.
+- For current rankings, pass `year` and the latest rankings week. Omitting `week` returns the whole season. If the result is empty, try again with the week before.
+- For this week's games across the country, pass `year` and the current game week. For a specific team, pass `team` and omit `week` unless the user named one.
 - Format final responses clearly with team names, scores, conference context, and venue/date information when available.
