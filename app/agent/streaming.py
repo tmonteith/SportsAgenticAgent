@@ -29,15 +29,17 @@ async def stream_agent_turn(
     history: Optional[Sequence[ConversationMessage]] = None,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
 ) -> AsyncIterator[str]:
-    """Yield SSE frames for one agent turn, cancelling the turn if the consumer goes away.
-
-    Inference is not token-streamed, so the reply arrives as one message.delta
-    after the tool events.
-    """
+    """Yield SSE frames for one agent turn, cancelling the turn if the consumer goes away."""
     queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
+    text_sent = False
 
     def on_tool_event(event: str, data: Dict[str, Any]) -> None:
         queue.put_nowait(format_sse(event, data))
+
+    def on_text_delta(text: str) -> None:
+        nonlocal text_sent
+        text_sent = True
+        queue.put_nowait(format_sse("message.delta", {"text": text}))
 
     async def run_turn() -> None:
         try:
@@ -45,9 +47,10 @@ async def stream_agent_turn(
                 user_message=user_message,
                 history=history,
                 on_tool_event=on_tool_event,
+                on_text_delta=on_text_delta,
             )
-            if response.reply:
-                queue.put_nowait(format_sse("message.delta", {"text": response.reply}))
+            if response.reply and not text_sent:
+                on_text_delta(response.reply)
             queue.put_nowait(format_sse("done", {}))
         except LLMClientError as exc:
             logger.error("Streaming chat failed due to LLM error: %s", exc)
