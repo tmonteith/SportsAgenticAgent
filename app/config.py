@@ -72,6 +72,11 @@ class Settings(BaseSettings):
         le=20,
         description="Maximum MCP tool-calling iterations per user request",
     )
+    tool_result_max_chars: int = Field(
+        default=2400,
+        ge=1000,
+        description="Characters of tool results shown to the model per turn; raise with LLAMA_CTX_SIZE",
+    )
     skills_dir: str = Field(
         default="skills",
         description="Directory containing markdown skill files for the agent",

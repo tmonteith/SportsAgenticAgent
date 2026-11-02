@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from app.agent.tool_results import RANKINGS_TOOL, compact_tool_result, needs_rankings
 from app.llm.base import LLMResponse
 from app.llm.router import LLMRouter, ProviderSelection
 from app.llm.streaming import TextDeltaCallback
@@ -18,6 +19,9 @@ logger = get_logger("agent")
 # Receives ("tool.start" | "tool.end", payload) as tools run during a turn.
 ToolEventCallback = Callable[[str, Dict[str, Any]], None]
 
+# Later results in a turn still get this much, however much earlier ones used.
+MIN_TOOL_RESULT_CHARS = 800
+
 
 class AgentOrchestrator:
     """Coordinates system prompt construction, LLM tool calling, and MCP tool execution."""
@@ -28,11 +32,44 @@ class AgentOrchestrator:
         llm_router: LLMRouter,
         skills_loader: SkillsLoader,
         max_tool_iterations: int = 5,
+        tool_result_max_chars: int = 2400,
     ) -> None:
         self.mcp_client = mcp_client
         self.llm_router = llm_router
         self.skills_loader = skills_loader
         self.max_tool_iterations = max_tool_iterations
+        self.tool_result_max_chars = tool_result_max_chars
+
+    async def _compact_tool_result(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: str,
+        max_chars: int,
+    ) -> str:
+        """Shrink a tool result for the model, adding poll ranks to nationwide scores."""
+        rankings: Optional[str] = None
+        if needs_rankings(tool_name, arguments, result):
+            year_args = {"year": arguments["year"]} if "year" in arguments else {}
+            try:
+                rankings = await self.mcp_client.call_tool(RANKINGS_TOOL, year_args)
+            except MCPClientError as exc:
+                logger.warning("Could not fetch rankings for nationwide scores: %s", exc)
+
+        compacted = compact_tool_result(
+            tool_name,
+            arguments,
+            result,
+            max_chars=max_chars,
+            rankings=rankings,
+        )
+        logger.info(
+            "Compacted '%s' result from %d to %d chars",
+            tool_name,
+            len(result),
+            len(compacted),
+        )
+        return compacted
 
     async def run(
         self,
@@ -72,6 +109,7 @@ class AgentOrchestrator:
         fallback_triggered = False
         text_sent = False
         needs_break = False
+        tool_chars_left = self.tool_result_max_chars
 
         def send_text(text: str) -> None:
             nonlocal text_sent, needs_break
@@ -157,6 +195,16 @@ class AgentOrchestrator:
                     tool_result = json.dumps({"error": str(exc)})
                     tool_ok = False
 
+                model_result = tool_result
+                if tool_ok:
+                    model_result = await self._compact_tool_result(
+                        tc.name,
+                        tc.arguments,
+                        tool_result,
+                        max(tool_chars_left, MIN_TOOL_RESULT_CHARS),
+                    )
+                tool_chars_left -= len(model_result)
+
                 if on_tool_event:
                     on_tool_event(
                         "tool.end",
@@ -175,7 +223,7 @@ class AgentOrchestrator:
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "name": tc.name,
-                        "content": tool_result,
+                        "content": model_result,
                     }
                 )
 
