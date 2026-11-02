@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.llm.router import LLMRouter, ProviderSelection
 from app.logging_config import get_logger
@@ -12,6 +12,9 @@ from app.schemas import ChatResponse, ConversationMessage, ToolCallRecord
 from app.skills.loader import SkillsLoader
 
 logger = get_logger("agent")
+
+# Receives ("tool.start" | "tool.end", payload) as tools run during a turn.
+ToolEventCallback = Callable[[str, Dict[str, Any]], None]
 
 
 class AgentOrchestrator:
@@ -35,6 +38,7 @@ class AgentOrchestrator:
         history: Optional[Sequence[ConversationMessage]] = None,
         provider: Optional[ProviderSelection] = None,
         skill_names: Optional[Sequence[str]] = None,
+        on_tool_event: Optional[ToolEventCallback] = None,
     ) -> ChatResponse:
         """Execute a full agent turn including any MCP tool calls."""
         system_prompt = self.skills_loader.build_system_prompt(skill_names=skill_names)
@@ -111,11 +115,27 @@ class AgentOrchestrator:
 
             # Execute each requested MCP tool
             for tc in llm_response.tool_calls:
+                # Provider call ids repeat across iterations, so qualify them per turn.
+                event_id = f"{iteration}:{tc.id}"
+                if on_tool_event:
+                    on_tool_event(
+                        "tool.start",
+                        {"id": event_id, "name": tc.name, "args": tc.arguments},
+                    )
+
+                tool_ok = True
                 try:
                     tool_result = await self.mcp_client.call_tool(tc.name, tc.arguments)
                 except MCPClientError as exc:
                     logger.warning("MCP tool '%s' failed: %s", tc.name, exc)
                     tool_result = json.dumps({"error": str(exc)})
+                    tool_ok = False
+
+                if on_tool_event:
+                    on_tool_event(
+                        "tool.end",
+                        {"id": event_id, "name": tc.name, "ok": tool_ok},
+                    )
 
                 executed_calls.append(
                     ToolCallRecord(
