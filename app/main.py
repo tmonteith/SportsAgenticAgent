@@ -7,9 +7,10 @@ import time
 from typing import AsyncIterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.agent.orchestrator import AgentOrchestrator
+from app.agent.streaming import stream_agent_turn
 from app.config import Settings, get_settings
 from app.llm.base import LLMClientError
 from app.llm.gemini_client import GeminiClient
@@ -20,7 +21,9 @@ from app.mcp.client import SportsAgenticMCPClient
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    ChatStreamRequest,
     ComponentStatus,
+    ConversationMessage,
     HealthResponse,
     SkillInfo,
     SkillsResponse,
@@ -150,6 +153,26 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         except LLMClientError as exc:
             logger.error("Chat request failed due to LLM error: %s", exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.post("/chat/stream")
+    async def chat_stream_endpoint(
+        payload: ChatStreamRequest,
+        agent: AgentOrchestrator = Depends(get_orchestrator),
+    ) -> StreamingResponse:
+        """Stream an agent turn as server-sent events."""
+        history = [
+            ConversationMessage(role=item.role, content=item.content)
+            for item in payload.messages[:-1]
+        ]
+        return StreamingResponse(
+            stream_agent_turn(
+                agent,
+                user_message=payload.messages[-1].content,
+                history=history,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @application.get("/health", response_model=HealthResponse)
     async def health_endpoint(request: Request) -> HealthResponse:
