@@ -23,10 +23,11 @@ docker compose up --build
 
 ### Helm (Kubernetes)
 ```bash
-helm lint charts/sportsagentic-agent
+helm lint charts/sportsagentic-agent --set secrets.existingSecret=agent-secrets
 helm upgrade --install sportsagentic-agent charts/sportsagentic-agent \
   --set config.mcpServerUrl="http://sportsagentic:8080/sse" \
-  --set config.llamaServerUrl="http://llama-server:8081/v1"
+  --set config.llamaServerUrl="http://llama-server:8081/v1" \
+  --set secrets.existingSecret=agent-secrets
 ```
 
 ## Querying the Agent API

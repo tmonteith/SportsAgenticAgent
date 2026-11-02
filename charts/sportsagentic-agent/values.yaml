@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/tmonteith/sportsagentic-agent
   pullPolicy: IfNotPresent
+  # Keep this quoted, and use --set-string for an all-digit git SHA
   tag: "latest"
 
 imagePullSecrets: []
@@ -28,10 +29,14 @@ config:
 
 # Secret management for Google Gemini backup/alternative inference
 secrets:
-  # Provide an existing Kubernetes Secret name in production, or set geminiApiKey below
+  # Required: provide an existing Kubernetes Secret name in production, or set geminiApiKey below
   existingSecret: ""
   existingSecretKey: "GEMINI_API_KEY"
   geminiApiKey: ""
+  # Set to true to run on llama-server alone, with no Gemini key and no failover.
+  # This is an opt-out so that --reuse-values, which keeps the old chart's
+  # defaults, can't turn Gemini off.
+  geminiDisabled: false
 
 serviceAccount:
   create: true

@@ -60,12 +60,32 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Return the Secret name holding GEMINI_API_KEY
+Return the Secret name holding GEMINI_API_KEY. Fails when no key was provided,
+because failover would be off and /health wouldn't show it. Only call this when
+secrets.geminiDisabled is unset.
 */}}
 {{- define "sportsagentic-agent.secretName" -}}
 {{- if .Values.secrets.existingSecret }}
 {{- .Values.secrets.existingSecret }}
-{{- else }}
+{{- else if trim (.Values.secrets.geminiApiKey | default "") }}
 {{- include "sportsagentic-agent.fullname" . }}
+{{- else }}
+{{- fail "Gemini API key is missing: set secrets.existingSecret to a Secret holding it, set secrets.geminiApiKey to a non-empty value, or set secrets.geminiDisabled=true to run without Gemini." }}
 {{- end }}
+{{- end }}
+
+{{/*
+Return the image tag as a string. A number from a values file or --reuse-values
+is a float64 here, and toString would turn 8542126 into 8.542126e+06.
+*/}}
+{{- define "sportsagentic-agent.imageTag" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if kindIs "float64" $tag -}}
+{{- if ne (floor $tag) $tag -}}
+{{- fail (printf "image.tag %v is not a whole number, so YAML has already changed it. Quote it, or pass --set-string image.tag=<tag>." $tag) -}}
+{{- end -}}
+{{- printf "%.0f" $tag -}}
+{{- else -}}
+{{- $tag -}}
+{{- end -}}
 {{- end }}
