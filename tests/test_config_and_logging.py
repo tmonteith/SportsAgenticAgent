@@ -21,6 +21,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.llama_server_url == "http://localhost:8081/v1"
     assert settings.default_llm_provider == "auto"
     assert settings.max_tool_iterations == 5
+    assert settings.tool_result_max_chars == 2400
     assert settings.port == 8000
 
 

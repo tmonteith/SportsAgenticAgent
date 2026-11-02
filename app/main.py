@@ -70,6 +70,7 @@ def build_components(settings: Settings) -> tuple[
         llm_router=llm_router,
         skills_loader=skills_loader,
         max_tool_iterations=settings.max_tool_iterations,
+        tool_result_max_chars=settings.tool_result_max_chars,
     )
     return mcp_client, llama_client, gemini_client, llm_router, skills_loader, orchestrator
 

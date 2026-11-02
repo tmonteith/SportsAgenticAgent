@@ -21,6 +21,7 @@ config:
   geminiBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
   defaultLlmProvider: "auto"
   maxToolIterations: "5"
+  toolResultMaxChars: "2400"
   skillsDir: "skills"
   logLevel: "INFO"
   port: "8000"
