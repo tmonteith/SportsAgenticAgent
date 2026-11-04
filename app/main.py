@@ -7,7 +7,7 @@ import time
 from typing import AsyncIterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.agent.orchestrator import AgentOrchestrator
 from app.agent.streaming import stream_agent_turn
@@ -18,6 +18,13 @@ from app.llm.llama_client import LlamaServerClient
 from app.llm.router import LLMRouter
 from app.logging_config import get_logger, setup_logging
 from app.mcp.client import SportsAgenticMCPClient
+from app.rate_limit import (
+    RateLimitDecision,
+    SlidingWindowRateLimiter,
+    client_key,
+    describe_wait,
+    describe_window,
+)
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -114,6 +121,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     application.state.llm_router = llm_router
     application.state.skills_loader = skills_loader
     application.state.orchestrator = orchestrator
+    application.state.rate_limiter = (
+        SlidingWindowRateLimiter(
+            max_requests=settings.rate_limit_requests,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+        if settings.rate_limit_enabled
+        else None
+    )
 
     @application.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -129,6 +144,35 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         )
         return response
 
+    def enforce_rate_limit(request: Request) -> Optional[RateLimitDecision]:
+        """Count an agent turn for the caller, raising 429 once their window is full.
+
+        Called from the endpoint body rather than as a dependency, so requests that
+        fail validation are rejected without using up the caller's budget.
+        """
+        limiter: Optional[SlidingWindowRateLimiter] = request.app.state.rate_limiter
+        if limiter is None:
+            return None
+        key = client_key(request, settings.rate_limit_client_ip_header)
+        decision = limiter.hit(key)
+        if not decision.allowed:
+            logger.warning(
+                "Rate limit reached for client %s (%d per %ss)",
+                key,
+                decision.limit,
+                settings.rate_limit_window_seconds,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Limit of {decision.limit} requests per "
+                    f"{describe_window(settings.rate_limit_window_seconds)} reached. "
+                    f"Try again in {describe_wait(decision.retry_after_seconds)}."
+                ),
+                headers=decision.headers(),
+            )
+        return decision
+
     def get_orchestrator(request: Request) -> AgentOrchestrator:
         return request.app.state.orchestrator
 
@@ -141,9 +185,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     @application.post("/chat", response_model=ChatResponse)
     async def chat_endpoint(
         payload: ChatRequest,
+        request: Request,
+        response: Response,
         agent: AgentOrchestrator = Depends(get_orchestrator),
     ) -> ChatResponse:
         """Process a user query through the agent orchestrator."""
+        decision = enforce_rate_limit(request)
+        if decision:
+            response.headers.update(decision.headers())
         try:
             return await agent.run(
                 user_message=payload.message,
@@ -158,9 +207,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     @application.post("/chat/stream")
     async def chat_stream_endpoint(
         payload: ChatStreamRequest,
+        request: Request,
         agent: AgentOrchestrator = Depends(get_orchestrator),
     ) -> StreamingResponse:
         """Stream an agent turn as server-sent events."""
+        decision = enforce_rate_limit(request)
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        if decision:
+            headers.update(decision.headers())
         history = [
             ConversationMessage(role=item.role, content=item.content)
             for item in payload.messages[:-1]
@@ -172,7 +226,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
                 history=history,
             ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=headers,
         )
 
     @application.get("/health", response_model=HealthResponse)

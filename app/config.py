@@ -77,6 +77,29 @@ class Settings(BaseSettings):
         ge=1000,
         description="Characters of tool results shown to the model per turn; raise with LLAMA_CTX_SIZE",
     )
+    # Per-client limit on agent turns (/chat and /chat/stream)
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Whether to limit how many agent turns each client can start",
+    )
+    rate_limit_requests: int = Field(
+        default=10,
+        ge=1,
+        description="Agent turns allowed per client in each rate limit window",
+    )
+    rate_limit_window_seconds: int = Field(
+        default=3600,
+        ge=1,
+        description="Length of the sliding rate limit window in seconds",
+    )
+    rate_limit_client_ip_header: str = Field(
+        default="X-Real-IP",
+        description=(
+            "Header holding the client IP, set by the ingress. Leave empty to use the "
+            "socket peer address, which behind a proxy is the proxy's."
+        ),
+    )
+
     skills_dir: str = Field(
         default="skills",
         description="Directory containing markdown skill files for the agent",
