@@ -184,3 +184,74 @@ async def test_rate_limit_can_be_disabled(test_settings: Settings) -> None:
         response = await post_stream(app, ip="203.0.113.7")
         assert response.status_code == 200
         assert "X-RateLimit-Remaining" not in response.headers
+
+
+def test_status_reports_the_budget_without_counting() -> None:
+    clock = FakeClock()
+    limiter = SlidingWindowRateLimiter(max_requests=3, window_seconds=3600, clock=clock)
+
+    fresh = limiter.status("a")
+    assert (fresh.remaining, fresh.next_seconds, fresh.reset_seconds) == (3, 0, 0)
+
+    limiter.hit("a")
+    clock.now += 600
+    limiter.hit("a")
+    clock.now += 60
+
+    status = limiter.status("a")
+    assert status.limit == 3
+    assert status.remaining == 1
+    assert status.next_seconds == 2940  # the first hit leaves in 3600 - 660
+    assert status.reset_seconds == 3540  # the second hit leaves in 3600 - 60
+    assert limiter.status("a").remaining == 1
+
+
+def test_decision_headers_include_the_reset() -> None:
+    clock = FakeClock()
+    limiter = SlidingWindowRateLimiter(max_requests=1, window_seconds=100, clock=clock)
+
+    assert limiter.hit("a").headers()["X-RateLimit-Reset"] == "100"
+    clock.now += 30
+    denied = limiter.hit("a").headers()
+    assert denied["X-RateLimit-Reset"] == "70"
+    assert denied["Retry-After"] == "70"
+
+
+async def get_status(app: Any, ip: str) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.get("/rate-limit", headers={"X-Real-IP": ip})
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_tracks_turns_per_client(test_settings: Settings) -> None:
+    app = limited_app(test_settings)
+
+    before = (await get_status(app, "203.0.113.7")).json()
+    assert before == {
+        "enabled": True,
+        "limit": 2,
+        "remaining": 2,
+        "window_seconds": 3600,
+        "next_seconds": 0,
+        "reset_seconds": 0,
+    }
+
+    await post_stream(app, ip="203.0.113.7")
+    after = (await get_status(app, "203.0.113.7")).json()
+    assert after["remaining"] == 1
+    assert 3590 < after["reset_seconds"] <= 3600
+
+    # Reading the status never uses up a turn.
+    for _ in range(3):
+        await get_status(app, "203.0.113.7")
+    assert (await post_stream(app, ip="203.0.113.7")).status_code == 200
+    assert (await get_status(app, "198.51.100.20")).json()["remaining"] == 2
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_when_disabled(test_settings: Settings) -> None:
+    app = limited_app(test_settings, rate_limit_enabled=False)
+    body = (await get_status(app, "203.0.113.7")).json()
+    assert body["enabled"] is False
+    assert body["remaining"] is None

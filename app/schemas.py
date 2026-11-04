@@ -120,3 +120,21 @@ class SkillsResponse(BaseModel):
     """Response payload for GET /skills."""
 
     skills: List[SkillInfo]
+
+
+class RateLimitStatusResponse(BaseModel):
+    """The caller's agent-turn budget, as GET /rate-limit reports it."""
+
+    enabled: bool = Field(..., description="Whether agent turns are rate limited")
+    limit: Optional[int] = Field(default=None, description="Turns allowed per window")
+    remaining: Optional[int] = Field(default=None, description="Turns left in the current window")
+    window_seconds: Optional[int] = Field(default=None, description="Length of the sliding window")
+    next_seconds: Optional[int] = Field(
+        default=None,
+        description="Seconds until one more turn is available; 0 when the budget is full",
+    )
+    reset_seconds: Optional[int] = Field(
+        default=None,
+        description="Seconds until the whole budget is available again; 0 when it is full",
+    )
+

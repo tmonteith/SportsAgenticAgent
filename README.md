@@ -114,7 +114,7 @@ curl -N http://localhost:8000/chat/stream \
 ```
 
 ### Rate limiting
-Each client can start 10 agent turns (`/chat` or `/chat/stream` requests) in any rolling hour. The next one gets `429 Too Many Requests` with a `Retry-After` header and a message saying how long to wait. Successful responses carry `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Requests that fail validation don't count.
+Each client can start 10 agent turns (`/chat` or `/chat/stream` requests) in any rolling hour. The next one gets `429 Too Many Requests` with a `Retry-After` header and a message saying how long to wait. Successful responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (seconds until the whole budget is back). Requests that fail validation don't count.
 
 Clients are identified by the `X-Real-IP` header that ingress-nginx sets, so the ingress has to see real client addresses (see PROXY protocol in `SportsAgenticInfra`). Otherwise every request shares the load balancer's address and one bucket. Counts live in memory, which suits the single replica, and reset when the pod restarts.
 
@@ -124,6 +124,15 @@ Clients are identified by the `X-Real-IP` header that ingress-nginx sets, so the
 | `RATE_LIMIT_REQUESTS` | `10` | Turns allowed per client per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `3600` | Window length |
 | `RATE_LIMIT_CLIENT_IP_HEADER` | `X-Real-IP` | Header holding the client IP; empty uses the socket address |
+
+### `GET /rate-limit`
+Report the caller's budget without using a turn. The UI polls this to show how many questions are left.
+
+```json
+{"enabled": true, "limit": 10, "remaining": 7, "window_seconds": 3600, "next_seconds": 1310, "reset_seconds": 3120}
+```
+
+`next_seconds` is when one more turn frees up, and `reset_seconds` is when all of them are back. The window slides, so turns come back one at a time. When the limit is off, the response is `{"enabled": false}` with the other fields `null`.
 
 ### `GET /health`
 Check reachability and status of `SportsAgentic` MCP, `llama-server`, and Gemini configuration.
