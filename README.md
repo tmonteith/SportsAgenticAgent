@@ -7,6 +7,19 @@ FastAPI College Football AI Agent application in Python that connects:
 
 ---
 
+## Architecture
+
+![SportsAgenticAgent Architecture](docs/architecture.svg)
+
+SportsAgenticAgent is a multi-step FastAPI orchestrator service (`:8000`):
+- **API Endpoints** (`app/main.py`): Serves `POST /chat` (synchronous turn) and `POST /chat/stream` (real-time SSE streaming `tool.start`, `tool.end`, and `message.delta` events).
+- **Skills Loader** (`app/skills/loader.py`): Parses markdown skills (such as `skills/cfb.md`) to dynamically inject domain knowledge, guidelines, and tool selection instructions into the agent's system prompt.
+- **Agent Orchestrator** (`app/agent/orchestrator.py`): Coordinates the multi-step reasoning loop (up to `max_tool_iterations`). It calls the LLM, executes requested MCP tools, compacts tool outputs (max 2400 characters), and automatically enriches nationwide game scores with national AP rankings before feeding results back into subsequent reasoning turns.
+- **LLM Router** (`app/llm/router.py`): Manages primary inference via `LlamaServerClient` (`SportsAgenticInference` on port `8081`) with automated failover to `GeminiClient` (Google Gemini) upon upstream timeout or error (safely locking the provider once text has started streaming).
+- **MCP Client** (`app/mcp/client.py`): Maintains an asynchronous SSE connection with the Go `SportsAgentic` MCP server (`:8080/sse`), discovering tool schemas and executing tool calls.
+
+---
+
 ## Setup
 
 ```bash

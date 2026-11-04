@@ -1,0 +1,63 @@
+flowchart TD
+    subgraph Frontend["Consumers"]
+        WebUI["SportsAgenticUI (Web SPA)<br/>/api/chat & /api/chat/stream"]
+        DirectClient["API Client / cURL<br/>POST /chat & POST /chat/stream"]
+    end
+
+    subgraph Service["SportsAgenticAgent Service (FastAPI :8000)"]
+        direction TB
+        subgraph Endpoints["API Layer (app/main.py)"]
+            ChatSync["POST /chat<br/>Synchronous turn"]
+            ChatStream["POST /chat/stream<br/>SSE: tool.start, tool.end, message.delta"]
+            Health["GET /health<br/>MCP, Llama, Gemini status"]
+            ToolsCatalog["GET /tools & GET /skills"]
+        end
+
+        subgraph Skills["Skills Engine (app/skills)"]
+            SkillsLoader["SkillsLoader<br/>Loads skills/cfb.md<br/>Injects guidelines & prompt context"]
+        end
+
+        subgraph Orchestrator["Agent Orchestrator (app/agent)"]
+            Loop["Turn Loop (1..max_tool_iterations)"]
+            Compactor["Result Compactor & Enricher<br/>• Limits max_chars to 2400<br/>• Enriches scores with AP ranks<br/>via auto get_cfb_rankings call"]
+            StreamingRelay["Streaming SSE Relay<br/>Text delta & tool event delivery"]
+        end
+
+        subgraph Router["LLM Router (app/llm/router.py)"]
+            LLMRouter["LLMRouter<br/>Primary vs Fallback"]
+            LlamaClient["LlamaServerClient<br/>(Primary Local Model)"]
+            GeminiClient["GeminiClient<br/>(Cloud Failover)"]
+        end
+
+        subgraph MCPClient["MCP Integration (app/mcp)"]
+            SportsMCP["SportsAgenticMCPClient<br/>SSE client to Go MCP server"]
+        end
+    end
+
+    subgraph Upstream["Upstream Services"]
+        InferenceSvc["SportsAgenticInference<br/>http://llama-server:8081/v1"]
+        GeminiAPI["Google Gemini Cloud API<br/>https://generativelanguage.googleapis.com"]
+        GoMCPServer["SportsAgentic Go Server<br/>http://sportsagentic:8080/sse"]
+    end
+
+    WebUI --> Endpoints
+    DirectClient --> Endpoints
+
+    Endpoints --> Orchestrator
+    SkillsLoader --> Orchestrator
+
+    Loop -->|Prompt + Tools| LLMRouter
+    LLMRouter -->|Default/Primary| LlamaClient
+    LLMRouter -->|Failover on error/timeout| GeminiClient
+
+    LlamaClient -->|POST /v1/chat/completions| InferenceSvc
+    GeminiClient -->|generateContent| GeminiAPI
+
+    Loop -->|Tool Invocations| SportsMCP
+    SportsMCP -->|SSE /message| GoMCPServer
+    GoMCPServer -->|Raw Tool Result| SportsMCP
+    SportsMCP --> Compactor
+    Compactor -->|Enriched Result| Loop
+
+    Loop -->|Events & Deltas| StreamingRelay
+    StreamingRelay --> ChatStream
