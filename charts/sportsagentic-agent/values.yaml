@@ -23,6 +23,13 @@ config:
   defaultLlmProvider: "auto"
   maxToolIterations: "5"
   toolResultMaxChars: "2400"
+  # Agent turns (/chat, /chat/stream) per client IP in a sliding window.
+  # The client IP comes from X-Real-IP, which needs the ingress to see real
+  # client addresses (PROXY protocol on the OCI load balancer).
+  rateLimitEnabled: "true"
+  rateLimitRequests: "10"
+  rateLimitWindowSeconds: "3600"
+  rateLimitClientIpHeader: "X-Real-IP"
   skillsDir: "skills"
   logLevel: "INFO"
   port: "8000"

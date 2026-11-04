@@ -16,6 +16,10 @@ data:
   DEFAULT_LLM_PROVIDER: {{ .Values.config.defaultLlmProvider | quote }}
   MAX_TOOL_ITERATIONS: {{ .Values.config.maxToolIterations | quote }}
   TOOL_RESULT_MAX_CHARS: {{ .Values.config.toolResultMaxChars | quote }}
+  RATE_LIMIT_ENABLED: {{ .Values.config.rateLimitEnabled | quote }}
+  RATE_LIMIT_REQUESTS: {{ .Values.config.rateLimitRequests | quote }}
+  RATE_LIMIT_WINDOW_SECONDS: {{ .Values.config.rateLimitWindowSeconds | quote }}
+  RATE_LIMIT_CLIENT_IP_HEADER: {{ .Values.config.rateLimitClientIpHeader | quote }}
   SKILLS_DIR: {{ .Values.config.skillsDir | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   PORT: {{ .Values.config.port | quote }}
