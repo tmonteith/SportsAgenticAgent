@@ -6,7 +6,10 @@ image:
   # Keep this quoted, and use --set-string for an all-digit git SHA
   tag: "latest"
 
-imagePullSecrets: []
+# OCIR repos are private. Without this the kubelet pulls anonymously, which
+# only works on a node that has already cached the image.
+imagePullSecrets:
+  - name: ocir-pull
 nameOverride: ""
 fullnameOverride: ""
 
