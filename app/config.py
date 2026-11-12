@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -100,6 +100,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Telemetry to Kafka (agent.events). On only when both are set.
+    kafka_bootstrap: Optional[str] = Field(
+        default=None,
+        description="Kafka bootstrap servers (host:port[,host:port]) for agent.events; empty turns telemetry off",
+    )
+    telemetry_salt: Optional[SecretStr] = Field(
+        default=None,
+        description="HMAC key for user_key in telemetry events; empty turns telemetry off",
+    )
+
     skills_dir: str = Field(
         default="skills",
         description="Directory containing markdown skill files for the agent",
@@ -114,6 +124,21 @@ class Settings(BaseSettings):
         le=65535,
         description="Port for the FastAPI application",
     )
+
+
+    @property
+    def telemetry_bootstrap(self) -> Optional[str]:
+        """Kafka bootstrap servers, or None when unset or blank."""
+        value = (self.kafka_bootstrap or "").strip()
+        return value or None
+
+    @property
+    def telemetry_key(self) -> Optional[str]:
+        """The telemetry salt without surrounding whitespace, or None when unset or blank."""
+        if self.telemetry_salt is None:
+            return None
+        value = self.telemetry_salt.get_secret_value().strip()
+        return value or None
 
 
 @lru_cache()

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+import httpx
 
 from app.agent.tool_results import RANKINGS_TOOL, compact_tool_result, needs_rankings
 from app.llm.base import LLMResponse
@@ -13,6 +16,13 @@ from app.logging_config import get_logger
 from app.mcp.client import MCPClientError, SportsAgenticMCPClient
 from app.schemas import ChatResponse, ConversationMessage, ToolCallRecord
 from app.skills.loader import SkillsLoader
+from app.telemetry.events import (
+    ERROR_CLIENT_DISCONNECTED,
+    ERROR_INTERNAL,
+    ERROR_MCP,
+    ERROR_MCP_TIMEOUT,
+)
+from app.telemetry.request import current_request
 
 logger = get_logger("agent")
 
@@ -40,6 +50,27 @@ class AgentOrchestrator:
         self.max_tool_iterations = max_tool_iterations
         self.tool_result_max_chars = tool_result_max_chars
 
+    async def _call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        """Call an MCP tool, reporting a tool_called event when telemetry is on."""
+        telemetry = current_request.get()
+        if telemetry is None:
+            return await self.mcp_client.call_tool(tool_name, arguments)
+
+        timer = telemetry.tool_started()
+        try:
+            result = await self.mcp_client.call_tool(tool_name, arguments)
+        except MCPClientError as exc:
+            telemetry.tool_called(tool_name, timer, _mcp_error_code(exc))
+            raise
+        except asyncio.CancelledError:
+            telemetry.tool_called(tool_name, timer, ERROR_CLIENT_DISCONNECTED)
+            raise
+        except Exception:
+            telemetry.tool_called(tool_name, timer, ERROR_INTERNAL)
+            raise
+        telemetry.tool_called(tool_name, timer)
+        return result
+
     async def _compact_tool_result(
         self,
         tool_name: str,
@@ -52,7 +83,7 @@ class AgentOrchestrator:
         if needs_rankings(tool_name, arguments, result):
             year_args = {"year": arguments["year"]} if "year" in arguments else {}
             try:
-                rankings = await self.mcp_client.call_tool(RANKINGS_TOOL, year_args)
+                rankings = await self._call_tool(RANKINGS_TOOL, year_args)
             except MCPClientError as exc:
                 logger.warning("Could not fetch rankings for nationwide scores: %s", exc)
 
@@ -120,18 +151,23 @@ class AgentOrchestrator:
 
         async def infer(tools: Optional[List[Dict[str, Any]]]) -> LLMResponse:
             if on_text_delta is None:
-                return await self.llm_router.chat(
+                response = await self.llm_router.chat(
                     messages=messages,
                     mcp_tools=tools,
                     provider=provider,
                 )
-            return await self.llm_router.chat_stream(
-                messages=messages,
-                on_text_delta=send_text,
-                mcp_tools=tools,
-                provider=provider,
-                allow_fallback=not text_sent,
-            )
+            else:
+                response = await self.llm_router.chat_stream(
+                    messages=messages,
+                    on_text_delta=send_text,
+                    mcp_tools=tools,
+                    provider=provider,
+                    allow_fallback=not text_sent,
+                )
+            telemetry = current_request.get()
+            if telemetry is not None:
+                telemetry.record_llm_response(response)
+            return response
 
         for iteration in range(1, self.max_tool_iterations + 1):
             logger.debug("Agent iteration %d/%d", iteration, self.max_tool_iterations)
@@ -189,7 +225,7 @@ class AgentOrchestrator:
 
                 tool_ok = True
                 try:
-                    tool_result = await self.mcp_client.call_tool(tc.name, tc.arguments)
+                    tool_result = await self._call_tool(tc.name, tc.arguments)
                 except MCPClientError as exc:
                     logger.warning("MCP tool '%s' failed: %s", tc.name, exc)
                     tool_result = json.dumps({"error": str(exc)})
@@ -244,3 +280,11 @@ class AgentOrchestrator:
             fallback_triggered=fallback_triggered,
             tool_calls=executed_calls,
         )
+
+
+def _mcp_error_code(exc: MCPClientError) -> str:
+    """mcp_timeout when the MCP call timed out, else mcp_error."""
+    cause = exc.__cause__
+    if isinstance(cause, (httpx.TimeoutException, asyncio.TimeoutError)):
+        return ERROR_MCP_TIMEOUT
+    return ERROR_MCP

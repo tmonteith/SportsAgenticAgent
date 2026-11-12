@@ -44,6 +44,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "sportsagentic-agent.fullname" . }}
+            {{- with .Values.secrets.telemetrySaltSecret }}
+            # TELEMETRY_SALT; optional so the pod starts before the Secret exists
+            - secretRef:
+                name: {{ . }}
+                optional: true
+            {{- end }}
           {{- if not .Values.secrets.geminiDisabled }}
           env:
             - name: GEMINI_API_KEY

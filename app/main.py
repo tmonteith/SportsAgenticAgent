@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import time
 from typing import AsyncIterator, Optional
@@ -16,7 +17,7 @@ from app.llm.base import LLMClientError
 from app.llm.gemini_client import GeminiClient
 from app.llm.llama_client import LlamaServerClient
 from app.llm.router import LLMRouter
-from app.logging_config import get_logger, setup_logging
+from app.logging_config import get_logger, request_id_var, setup_logging
 from app.mcp.client import SportsAgenticMCPClient
 from app.rate_limit import (
     RateLimitDecision,
@@ -39,6 +40,21 @@ from app.schemas import (
     ToolsResponse,
 )
 from app.skills.loader import SkillsLoader
+from app.telemetry import (
+    KafkaTelemetry,
+    RequestTelemetry,
+    build_telemetry,
+    current_request,
+    missing_telemetry_settings,
+    request_telemetry,
+)
+from app.telemetry.events import (
+    ERROR_CLIENT_DISCONNECTED,
+    ERROR_INTERNAL,
+    ERROR_LLM,
+    REQUEST_ID_HEADER,
+    new_id,
+)
 
 logger = get_logger("api")
 
@@ -96,6 +112,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         skills_loader,
         orchestrator,
     ) = build_components(settings)
+    telemetry = build_telemetry(settings)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -105,8 +122,22 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             settings.llama_server_url,
             settings.default_llm_provider,
         )
-        yield
-        logger.info("Shutting down SportsAgenticAgent")
+        app_telemetry: Optional[KafkaTelemetry] = application.state.telemetry
+        if app_telemetry is None:
+            missing = missing_telemetry_settings(settings)
+            logger.info(
+                "Telemetry off: %s not set, so no agent.events are produced",
+                " and ".join(missing) if missing else "no telemetry sink",
+            )
+        else:
+            # Returns at once; the producer connects in the background.
+            await app_telemetry.start()
+        try:
+            yield
+        finally:
+            logger.info("Shutting down SportsAgenticAgent")
+            if app_telemetry is not None:
+                await app_telemetry.stop()
 
     application = FastAPI(
         title="SportsAgenticAgent",
@@ -122,6 +153,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     application.state.llm_router = llm_router
     application.state.skills_loader = skills_loader
     application.state.orchestrator = orchestrator
+    application.state.telemetry = telemetry
     application.state.rate_limiter = (
         SlidingWindowRateLimiter(
             max_requests=settings.rate_limit_requests,
@@ -133,17 +165,25 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     @application.middleware("http")
     async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
-        start = time.monotonic()
-        response = await call_next(request)
-        duration_ms = (time.monotonic() - start) * 1000.0
-        logger.info(
-            "%s %s -> %d (%.1fms)",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
-        return response
+        # Always our own UUID v4: a client-supplied id is never trusted or reused.
+        request_id = new_id()
+        request.state.request_id = request_id
+        token = request_id_var.set(request_id)
+        try:
+            start = time.monotonic()
+            response = await call_next(request)
+            duration_ms = (time.monotonic() - start) * 1000.0
+            logger.info(
+                "%s %s -> %d (%.1fms)",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
+        finally:
+            request_id_var.reset(token)
 
     def enforce_rate_limit(request: Request) -> Optional[RateLimitDecision]:
         """Count an agent turn for the caller, raising 429 once their window is full.
@@ -174,6 +214,16 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             )
         return decision
 
+    def turn_telemetry(request: Request, prompt: str) -> Optional[RequestTelemetry]:
+        """Telemetry for an agent turn that passed the rate limit, or None when it is off."""
+        return request_telemetry(
+            request,
+            settings,
+            request.app.state.telemetry,
+            getattr(request.state, "request_id", None) or new_id(),
+            prompt,
+        )
+
     def get_orchestrator(request: Request) -> AgentOrchestrator:
         return request.app.state.orchestrator
 
@@ -194,16 +244,32 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         decision = enforce_rate_limit(request)
         if decision:
             response.headers.update(decision.headers())
+        telemetry = turn_telemetry(request, payload.message)
+        if telemetry is not None:
+            telemetry.start()
+        token = current_request.set(telemetry)
         try:
-            return await agent.run(
+            result = await agent.run(
                 user_message=payload.message,
                 history=payload.history,
                 provider=payload.provider,
                 skill_names=payload.skills,
             )
         except LLMClientError as exc:
+            if telemetry is not None:
+                telemetry.fail(ERROR_LLM)
             logger.error("Chat request failed due to LLM error: %s", exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except BaseException as exc:
+            if telemetry is not None:
+                cancelled = isinstance(exc, asyncio.CancelledError)
+                telemetry.fail(ERROR_CLIENT_DISCONNECTED if cancelled else ERROR_INTERNAL)
+            raise
+        finally:
+            current_request.reset(token)
+        if telemetry is not None:
+            telemetry.complete()
+        return result
 
     @application.post("/chat/stream")
     async def chat_stream_endpoint(
@@ -220,11 +286,13 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             ConversationMessage(role=item.role, content=item.content)
             for item in payload.messages[:-1]
         ]
+        user_message = payload.messages[-1].content
         return StreamingResponse(
             stream_agent_turn(
                 agent,
-                user_message=payload.messages[-1].content,
+                user_message=user_message,
                 history=history,
+                telemetry=turn_telemetry(request, user_message),
             ),
             media_type="text/event-stream",
             headers=headers,

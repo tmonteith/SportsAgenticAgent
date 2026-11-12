@@ -38,6 +38,16 @@ class LLMResponse:
     tool_calls: List[ToolCallRequest] = field(default_factory=list)
     provider_used: str = "llama"
     fallback_triggered: bool = False
+    # Token counts from the provider's usage block, when it sends one.
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+
+def _usage_count(usage: Any, key: str) -> Optional[int]:
+    value = usage.get(key) if isinstance(usage, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def mcp_tools_to_openai_tools(mcp_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -115,11 +125,14 @@ def parse_openai_chat_response(
             parsed_tool_calls.append(inline_call)
             content = ""
 
+    usage = payload.get("usage")
     return LLMResponse(
         content=content,
         tool_calls=parsed_tool_calls,
         provider_used=provider_name,
         fallback_triggered=False,
+        input_tokens=_usage_count(usage, "prompt_tokens"),
+        output_tokens=_usage_count(usage, "completion_tokens"),
     )
 
 

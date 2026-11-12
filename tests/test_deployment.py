@@ -179,3 +179,36 @@ def test_helm_fails_on_a_mangled_image_tag(tmp_path: Path) -> None:
     proc = render_chart("--set", "secrets.existingSecret=agent-secrets", "-f", str(values))
     assert proc.returncode != 0
     assert "image.tag" in proc.stderr
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+def test_helm_telemetry_env_defaults() -> None:
+    """KAFKA_BOOTSTRAP comes from the ConfigMap and TELEMETRY_SALT from an optional Secret."""
+    proc = render_chart("--set", "secrets.existingSecret=agent-secrets")
+    assert proc.returncode == 0, proc.stderr
+    docs = [d for d in yaml.safe_load_all(proc.stdout) if d]
+    configmap = next(d for d in docs if d["kind"] == "ConfigMap")
+    assert configmap["data"]["KAFKA_BOOTSTRAP"] == "sa-kafka-kafka-bootstrap.data:9092"
+    container = deployment_container(proc.stdout)
+    assert {"secretRef": {"name": "telemetry-salt", "optional": True}} in container["envFrom"]
+    assert container["env"][0]["name"] == "GEMINI_API_KEY"
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="helm is not installed")
+@pytest.mark.parametrize("value", ["", "null"])
+def test_helm_telemetry_can_be_left_out(value: str) -> None:
+    """Empty or missing values (as with --reuse-values from an older release) render telemetry off."""
+    proc = render_chart(
+        "--set",
+        "secrets.existingSecret=agent-secrets",
+        "--set",
+        f"config.kafkaBootstrap={value}",
+        "--set",
+        f"secrets.telemetrySaltSecret={value}",
+    )
+    assert proc.returncode == 0, proc.stderr
+    docs = [d for d in yaml.safe_load_all(proc.stdout) if d]
+    configmap = next(d for d in docs if d["kind"] == "ConfigMap")
+    assert configmap["data"]["KAFKA_BOOTSTRAP"] == ""
+    container = deployment_container(proc.stdout)
+    assert all("secretRef" not in source for source in container["envFrom"])

@@ -48,9 +48,14 @@ class ChatStreamAssembler:
         self._plain_text = not self.known_tool_names
         self._tool_calls: List[Dict[str, Any]] = []
         self._calls_by_index: Dict[Optional[int], Dict[str, Any]] = {}
+        self._usage: Optional[Dict[str, Any]] = None
 
     def feed(self, chunk: Dict[str, Any]) -> None:
         """Apply one chat.completion.chunk payload."""
+        # Providers that report usage send it on a final chunk, often with no choices.
+        if isinstance(chunk.get("usage"), dict):
+            self._usage = chunk["usage"]
+
         choices = chunk.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
             return
@@ -74,8 +79,11 @@ class ChatStreamAssembler:
         if self._tool_calls:
             message["tool_calls"] = self._tool_calls
 
+        payload: Dict[str, Any] = {"choices": [{"message": message}]}
+        if self._usage is not None:
+            payload["usage"] = self._usage
         response = parse_openai_chat_response(
-            {"choices": [{"message": message}]},
+            payload,
             provider_name=self.provider_name,
             known_tool_names=self.known_tool_names,
         )

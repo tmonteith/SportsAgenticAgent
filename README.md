@@ -86,6 +86,8 @@ helm upgrade --install sportsagentic-agent charts/sportsagentic-agent \
   --set-string image.tag=<git-sha>
 ```
 
+Telemetry is on by default in the chart: `config.kafkaBootstrap` sets `KAFKA_BOOTSTRAP` (default `sa-kafka-kafka-bootstrap.data:9092`), and the pod imports `TELEMETRY_SALT` from the Secret named by `secrets.telemetrySaltSecret` (default `telemetry-salt`, synced from OCI Vault by External Secrets). That reference is optional, so the pod starts with telemetry off before the Secret exists; restart the deployment once it does. Set either value to empty to leave telemetry off.
+
 The chart fails if neither `secrets.existingSecret` nor `secrets.geminiApiKey` is set, so an empty key can't reach the cluster. To run on `llama-server` alone, with no Gemini failover, say so explicitly with `--set secrets.geminiDisabled=true`. Use `--set-string` for the image tag, because a git SHA made only of digits is otherwise read as a number.
 
 ---
@@ -133,6 +135,42 @@ Report the caller's budget without using a turn. The UI polls this to show how m
 ```
 
 `next_seconds` is when one more turn frees up, and `reset_seconds` is when all of them are back. The window slides, so turns come back one at a time. When the limit is off, the response is `{"enabled": false}` with the other fields `null`.
+
+### Request IDs
+Every response carries `X-Request-Id`, a UUID v4 the agent generates per request (a client-supplied value is ignored). The same ID appears in every log line written while handling the request, after the logger name: `... | sportsagentic.api | 6f1c... | POST /chat -> 200 (812.4ms)`. Lines outside a request show `-`.
+
+### Telemetry (`agent.events`)
+Each agent turn (`/chat` or `/chat/stream` that passed the rate limit) publishes JSON events to the Kafka topic `agent.events`, keyed by `request_id`, for the lakehouse. Telemetry is on only when both `KAFKA_BOOTSTRAP` and `TELEMETRY_SALT` are set; otherwise the agent logs `Telemetry off: ... not set` once at startup and produces nothing.
+
+| Variable | Meaning |
+| --- | --- |
+| `KAFKA_BOOTSTRAP` | Bootstrap servers, e.g. `sa-kafka-kafka-bootstrap.data:9092` (plaintext) |
+| `TELEMETRY_SALT` | HMAC key for `user_key`; surrounding whitespace is ignored. In Kubernetes it comes from the Secret `telemetry-salt` |
+
+Events never contain prompt text, client IPs or raw user identifiers. `user_key` is the lowercase hex HMAC-SHA256 of the client IP (taken like the rate limiter does, from `X-Real-IP`) keyed with `TELEMETRY_SALT`; to find a user's rows for a deletion request, compute the same HMAC of their IP. `session_id`, `client` and `app_version` come from the `X-Session-Id`, `X-Client` and `X-App-Version` headers the web UI sends, and are kept only when well-formed (a UUID, `^[a-z0-9._-]{1,32}$` and `^[A-Za-z0-9._+-]{1,64}$`), otherwise `null`.
+
+Every event has `event_id` (UUID v4), `event_type`, `request_id`, `session_id`, `user_key` and `event_time` (RFC 3339 UTC with milliseconds). Type-specific fields:
+
+| `event_type` | When | Fields |
+| --- | --- | --- |
+| `request_started` | the turn starts | `prompt_chars`, `client`, `app_version` |
+| `tool_called` | each MCP tool call ends; `event_time` is when it started | `tool`, `latency_ms`, `status` (`ok` or `error`), `error_code` |
+| `request_completed` | `/chat` returns, or the last SSE frame of `/chat/stream` is handed to the server | `latency_ms`, `status` (`completed`), `error_code` (`null`), `model`, `input_tokens`, `output_tokens`, `prompt_chars`, `client`, `app_version` |
+| `request_failed` | the turn fails or the stream is abandoned | the same, with `status` `failed` and an `error_code` |
+
+`model` is the configured model of the provider that answered last (`LLAMA_MODEL` or `GEMINI_MODEL`). `input_tokens` and `output_tokens` add up the provider's `usage` over every LLM call in the turn, and are `null` when no call reported usage; streamed replies only include it if the provider sends usage on its last chunk without being asked. `prompt_chars` is the length of the new user message. Fields that don't apply are `null`.
+
+| `error_code` | Meaning |
+| --- | --- |
+| `llm_error` | every provider the turn could use failed (`/chat` answers 502, the stream sends `error`) |
+| `internal_error` | an unexpected exception in the agent |
+| `client_disconnected` | the client went away before the stream ended (also used for a tool call cut short by that) |
+| `mcp_error` | on `tool_called`: the MCP server failed or the tool reported an error |
+| `mcp_timeout` | on `tool_called`: the MCP call timed out |
+
+Telemetry never fails or slows a request. Events go on a bounded in-memory queue (1000 events) and a background task sends them in batches every 100 ms with a 5-second producer timeout. Startup doesn't wait for Kafka; while it is unreachable, the agent retries with backoff (5 s up to 60 s) and drops events. Dropped events (`queue_full`, `kafka_unavailable`, `send_failed`, `delivery_failed`) are counted in process and logged as a warning at most once a minute while drops happen, plus a total at shutdown. Rate-limited (429) and invalid (422) requests produce no events.
+
+To measure the overhead locally (fake LLM, fake MCP and fake brokers, no network): `python tests/bench_telemetry.py`.
 
 ### `GET /health`
 Check reachability and status of `SportsAgentic` MCP, `llama-server`, and Gemini configuration.
