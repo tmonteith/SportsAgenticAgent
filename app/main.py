@@ -32,6 +32,7 @@ from app.schemas import (
     ComponentStatus,
     ConversationMessage,
     HealthResponse,
+    RateLimitStatusResponse,
     SkillInfo,
     SkillsResponse,
     ToolInfo,
@@ -227,6 +228,22 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             ),
             media_type="text/event-stream",
             headers=headers,
+        )
+
+    @application.get("/rate-limit", response_model=RateLimitStatusResponse)
+    async def rate_limit_endpoint(request: Request) -> RateLimitStatusResponse:
+        """Report the caller's remaining agent turns without using one."""
+        limiter: Optional[SlidingWindowRateLimiter] = request.app.state.rate_limiter
+        if limiter is None:
+            return RateLimitStatusResponse(enabled=False)
+        status = limiter.status(client_key(request, settings.rate_limit_client_ip_header))
+        return RateLimitStatusResponse(
+            enabled=True,
+            limit=status.limit,
+            remaining=status.remaining,
+            window_seconds=settings.rate_limit_window_seconds,
+            next_seconds=status.next_seconds,
+            reset_seconds=status.reset_seconds,
         )
 
     @application.get("/health", response_model=HealthResponse)

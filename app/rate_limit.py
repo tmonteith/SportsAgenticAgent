@@ -15,6 +15,18 @@ PRUNE_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
+class RateLimitStatus:
+    """A client's budget, read without counting a request."""
+
+    limit: int
+    remaining: int
+    # Until one more request is available; 0 when the budget is full.
+    next_seconds: int
+    # Until every request is available again; 0 when the budget is full.
+    reset_seconds: int
+
+
+@dataclass(frozen=True)
 class RateLimitDecision:
     """Outcome of counting one request against a client's window."""
 
@@ -22,12 +34,14 @@ class RateLimitDecision:
     limit: int
     remaining: int
     retry_after_seconds: int
+    reset_seconds: int = 0
 
     def headers(self) -> Dict[str, str]:
         """Response headers describing the client's budget."""
         headers = {
             "X-RateLimit-Limit": str(self.limit),
             "X-RateLimit-Remaining": str(self.remaining),
+            "X-RateLimit-Reset": str(self.reset_seconds),
         }
         if not self.allowed:
             headers["Retry-After"] = str(self.retry_after_seconds)
@@ -57,18 +71,49 @@ class SlidingWindowRateLimiter:
         """Count a request for key, unless its window is already full."""
         now = self._clock()
         self._prune(now)
+        hits = self._current_hits(key, now)
 
+        if len(hits) >= self.max_requests:
+            return RateLimitDecision(
+                False,
+                self.max_requests,
+                0,
+                self._seconds_until(hits[0], now),
+                self._seconds_until(hits[-1], now),
+            )
+
+        hits.append(now)
+        return RateLimitDecision(
+            True,
+            self.max_requests,
+            self.max_requests - len(hits),
+            0,
+            self._seconds_until(now, now),
+        )
+
+    def status(self, key: str) -> RateLimitStatus:
+        """Report key's budget without counting a request."""
+        now = self._clock()
+        hits = self._current_hits(key, now)
+        if not hits:
+            return RateLimitStatus(self.max_requests, self.max_requests, 0, 0)
+        return RateLimitStatus(
+            limit=self.max_requests,
+            remaining=max(0, self.max_requests - len(hits)),
+            next_seconds=self._seconds_until(hits[0], now),
+            reset_seconds=self._seconds_until(hits[-1], now),
+        )
+
+    def _current_hits(self, key: str, now: float) -> Deque[float]:
         hits = self._hits.setdefault(key, deque())
         cutoff = now - self.window_seconds
         while hits and hits[0] <= cutoff:
             hits.popleft()
+        return hits
 
-        if len(hits) >= self.max_requests:
-            retry_after = max(1, math.ceil(hits[0] + self.window_seconds - now))
-            return RateLimitDecision(False, self.max_requests, 0, retry_after)
-
-        hits.append(now)
-        return RateLimitDecision(True, self.max_requests, self.max_requests - len(hits), 0)
+    def _seconds_until(self, hit_time: float, now: float) -> int:
+        """Whole seconds until a request made at hit_time leaves the window."""
+        return max(1, math.ceil(hit_time + self.window_seconds - now))
 
     def _prune(self, now: float) -> None:
         if now - self._last_prune < PRUNE_INTERVAL_SECONDS:
