@@ -33,6 +33,11 @@ config:
   rateLimitRequests: "10"
   rateLimitWindowSeconds: "3600"
   rateLimitClientIpHeader: "X-Real-IP"
+  # Kafka bootstrap for telemetry events (topic agent.events). The app produces
+  # events only when this and TELEMETRY_SALT (secrets.telemetrySaltSecret) are
+  # both set; empty turns telemetry off. An unreachable broker never fails or
+  # slows a request: events are dropped and counted in the logs.
+  kafkaBootstrap: "sa-kafka-kafka-bootstrap.data:9092"
   skillsDir: "skills"
   logLevel: "INFO"
   port: "8000"
@@ -47,6 +52,11 @@ secrets:
   # This is an opt-out so that --reuse-values, which keeps the old chart's
   # defaults, can't turn Gemini off.
   geminiDisabled: false
+  # Secret whose TELEMETRY_SALT key keys the HMAC behind each event's user_key.
+  # External Secrets syncs it from OCI Vault. The reference is optional, so the
+  # pod starts (with telemetry off) before the Secret exists; restart the pod
+  # once it does. Empty leaves the reference out.
+  telemetrySaltSecret: "telemetry-salt"
 
 serviceAccount:
   create: true

@@ -20,6 +20,7 @@ data:
   RATE_LIMIT_REQUESTS: {{ .Values.config.rateLimitRequests | quote }}
   RATE_LIMIT_WINDOW_SECONDS: {{ .Values.config.rateLimitWindowSeconds | quote }}
   RATE_LIMIT_CLIENT_IP_HEADER: {{ .Values.config.rateLimitClientIpHeader | quote }}
+  KAFKA_BOOTSTRAP: {{ .Values.config.kafkaBootstrap | default "" | quote }}
   SKILLS_DIR: {{ .Values.config.skillsDir | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   PORT: {{ .Values.config.port | quote }}
