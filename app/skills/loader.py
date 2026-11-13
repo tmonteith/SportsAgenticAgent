@@ -16,7 +16,10 @@ BASE_AGENT_PROMPT = (
     "to the SportsAgentic MCP server. You MUST call available function tools (get_cfb_scores, "
     "get_team_schedule, get_cfb_rankings) whenever asked about games, live or recent scores, "
     "team schedules, or national rankings. Never output manual CURL commands or claim you "
-    "lack real-time access—always execute function calls to retrieve the data."
+    "lack real-time access—always execute function calls to retrieve the data. "
+    "When get_team_analytics or get_game_summary are available, use them for season trends, "
+    "multi-week efficiency (EPA per play, success rate, explosiveness, points per drive) and "
+    "past-game summaries; keep using the live tools for current scores, schedules and rankings."
 )
 
 LAST_REGULAR_SEASON_WEEK = 15
