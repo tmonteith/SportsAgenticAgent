@@ -19,9 +19,16 @@ Use the `SportsAgentic` MCP tools whenever a user asks about college football ga
 3. **`get_cfb_rankings`**
    - Parameters: `year` (optional number), `week` (optional number).
    - Use when asked for AP Top 25, Coaches Poll, or College Football Playoff (CFP) rankings.
+4. **`get_team_analytics`** (only when the server lists it)
+   - Parameters: `team` (required), `season` (required), `week_from`, `week_to`, `metrics`, `compare_team`, `season_type`.
+   - Use for trends and efficiency over several weeks or a season: EPA per play, success rate, explosiveness, points per drive, offense or defense, and team-vs-team comparisons. One season per call.
+5. **`get_game_summary`** (only when the server lists it)
+   - Parameters: `game_id`, or `team` + `season` + `week`.
+   - Use for a finished game's box-score-style summary (plays, yards, EPA, success rate, turnovers).
 
 ## Guidelines
 - Always execute function tools (`get_cfb_scores`, `get_team_schedule`, `get_cfb_rankings`) immediately when answering user queries.
+- Analytics tools answer from last night's data. For live or today's scores, schedules and rankings, always use the live tools above.
 - When asked about a specific team, always pass the `team` parameter. Common team nicknames and abbreviations (e.g., `"Bama"`, `"Ole Miss"`, `"OSU"`, `"UGA"`, `"CSU"`, `"Longhorns"`) are supported directly by the `team` parameter.
 - Never guess a `week`. Use the current game week and latest rankings week from the system prompt, and if they are missing, ask the user which week they mean.
 - For current rankings, pass `year` and the latest rankings week. Omitting `week` returns the whole season. If the result is empty, try again with the week before.
